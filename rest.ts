@@ -3,7 +3,6 @@
 import {
   ZERO_OID,
   buildTreesFromFiles,
-  parseCommit,
   parseTag,
   type GitObject,
 } from './gitutil.ts';
@@ -125,9 +124,8 @@ function pullJson(store: Store, repo: Repo, pull: Pull): Record<string, unknown>
 }
 
 function commitJson(repo: Repo, sha: string): Record<string, unknown> | null {
-  const obj = repo.objects.get(sha);
-  if (!obj || obj.type !== 'commit') return null;
-  const info = parseCommit(obj.data);
+  const info = repo.commitInfo(sha);
+  if (!info) return null;
   return {
     sha,
     commit: {
@@ -152,11 +150,11 @@ function listCommits(repo: Repo, tip: string): Record<string, unknown>[] {
     const oid = stack.pop()!;
     if (seen.has(oid) || oid === ZERO_OID) continue;
     seen.add(oid);
-    const obj = repo.objects.get(oid);
-    if (!obj || obj.type !== 'commit') continue;
+    const info = repo.commitInfo(oid);
+    if (!info) continue;
     const c = commitJson(repo, oid);
     if (c) out.push(c);
-    for (const p of parseCommit(obj.data).parents) stack.push(p);
+    for (const p of info.parents) stack.push(p);
   }
   return out;
 }

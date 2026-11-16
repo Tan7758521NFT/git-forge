@@ -312,23 +312,40 @@ export interface ParsedPack {
 
 /** Find the length of the zlib stream at the start of buf (expected output size). */
 function zlibStreamLength(buf: Buffer, expectedSize: number): number {
+  // A zlib stream is at most ~11 bytes of overhead over its input for the sizes
+  // we see (stored-block overhead is ~5 bytes per 64 KiB); +64 is a safe cap.
+  let hi = Math.min(buf.length, expectedSize + 64);
   let lo = 1;
-  let hi = buf.length;
   // Binary search: truncated streams throw; any length >= true length works.
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    try {
-      const out = inflateSync(buf.subarray(0, mid));
-      if (out.length === expectedSize) hi = mid;
-      else lo = mid + 1;
-    } catch {
-      lo = mid + 1;
+  const search = (top: number): number => {
+    let l = 1;
+    let h = top;
+    while (l < h) {
+      const mid = (l + h) >> 1;
+      try {
+        const out = inflateSync(buf.subarray(0, mid));
+        if (out.length === expectedSize) h = mid;
+        else l = mid + 1;
+      } catch {
+        l = mid + 1;
+      }
     }
+    return l;
+  };
+  let found = search(hi);
+  try {
+    const out = inflateSync(buf.subarray(0, found));
+    if (out.length === expectedSize) return found;
+  } catch {
+    // Fall through to the full-buffer search below.
   }
-  // Verify the found length really inflates to the expected size.
-  const out = inflateSync(buf.subarray(0, lo));
-  if (out.length !== expectedSize) throw new Error('pack: zlib stream length mismatch');
-  return lo;
+  if (hi < buf.length) {
+    found = search(buf.length);
+    const out = inflateSync(buf.subarray(0, found));
+    if (out.length !== expectedSize) throw new Error('pack: zlib stream length mismatch');
+    return found;
+  }
+  throw new Error('pack: zlib stream length mismatch');
 }
 
 /** Parse a packfile. Throws on bad header/trailer/count. Delta objects are resolved. */

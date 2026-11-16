@@ -4,7 +4,6 @@ import {
   FLUSH,
   ZERO_OID,
   buildPack,
-  parseCommit,
   parsePack,
   parsePktLines,
   parseTag,
@@ -143,9 +142,8 @@ export function computeSendSet(repo: Repo, params: FetchParams): SendSet {
     const prev = seenDepth.get(item.oid);
     if (prev !== undefined && prev <= item.depth) continue;
     seenDepth.set(item.oid, item.depth);
-    const obj = repo.objects.get(item.oid);
-    if (!obj || obj.type !== 'commit') continue;
-    const info = parseCommit(obj.data);
+    const info = repo.commitInfo(item.oid);
+    if (!info) continue;
     if (params.deepenSince !== null && commitTimestamp(info) < params.deepenSince) continue;
     wanted.add(item.oid);
     if (params.deepen !== null && item.depth + 1 >= params.deepen) continue;
@@ -158,10 +156,10 @@ export function computeSendSet(repo: Repo, params: FetchParams): SendSet {
     while (stack.length > 0) {
       const oid = stack.pop()!;
       if (wantedFull.has(oid)) continue;
-      const obj = repo.objects.get(oid);
-      if (!obj || obj.type !== 'commit') continue;
+      const info = repo.commitInfo(oid);
+      if (!info) continue;
       wantedFull.add(oid);
-      for (const p of parseCommit(obj.data).parents) stack.push(p);
+      for (const p of info.parents) stack.push(p);
     }
   }
   // Have closure; traversal stops at the client's shallow boundaries.
@@ -180,12 +178,12 @@ export function computeSendSet(repo: Repo, params: FetchParams): SendSet {
     while (stack.length > 0) {
       const oid = stack.pop()!;
       if (haveCommits.has(oid)) continue;
-      const obj = repo.objects.get(oid);
-      if (!obj || obj.type !== 'commit') continue;
+      const info = repo.commitInfo(oid);
+      if (!info) continue;
       haveCommits.add(oid);
       repo.collectCommitObjects(oid, haveObjects);
       if (shallowSet.has(oid)) continue;
-      for (const p of parseCommit(obj.data).parents) stack.push(p);
+      for (const p of info.parents) stack.push(p);
     }
   }
   // Send set.
@@ -204,16 +202,16 @@ export function computeSendSet(repo: Repo, params: FetchParams): SendSet {
   // Shallow info.
   const shallow: string[] = [];
   for (const c of sendCommits) {
-    const obj = repo.objects.get(c);
-    if (!obj || obj.type !== 'commit') continue;
-    const parents = parseCommit(obj.data).parents;
+    const info = repo.commitInfo(c);
+    if (!info) continue;
+    const parents = info.parents;
     if (parents.some((p) => !sendCommits.has(p) && !haveCommits.has(p))) shallow.push(c);
   }
   const unshallow: string[] = [];
   for (const c of shallowSet) {
-    const obj = repo.objects.get(c);
-    if (!obj || obj.type !== 'commit') continue;
-    const parents = parseCommit(obj.data).parents;
+    const info = repo.commitInfo(c);
+    if (!info) continue;
+    const parents = info.parents;
     if (parents.every((p) => sendCommits.has(p) || haveCommits.has(p))) unshallow.push(c);
   }
   let ack: string | null = null;

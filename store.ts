@@ -67,6 +67,9 @@ export class Repo {
   pullSeq = 0;
   labels = new Map<string, Label>();
   createdSeq: number;
+  // Cache of parsed commit headers: the ancestry walks below re-visit the
+  // same commits many times (a push's fast-forward check walks the branch).
+  private commitCache = new Map<string, import('./gitutil.ts').CommitInfo>();
 
   constructor(id: number, name: string, description: string, isPrivate: boolean, createdSeq: number) {
     this.id = id;
@@ -74,6 +77,17 @@ export class Repo {
     this.description = description;
     this.isPrivate = isPrivate;
     this.createdSeq = createdSeq;
+  }
+
+  /** Parsed commit header, cached per oid (commits are immutable). */
+  commitInfo(oid: string): import('./gitutil.ts').CommitInfo | null {
+    let info = this.commitCache.get(oid);
+    if (info) return info;
+    const obj = this.objects.get(oid);
+    if (!obj || obj.type !== 'commit') return null;
+    info = parseCommit(obj.data);
+    this.commitCache.set(oid, info);
+    return info;
   }
 
   getObject(oid: string): GitObject | undefined {
@@ -109,18 +123,29 @@ export class Repo {
     while (stack.length > 0) {
       const oid = stack.pop()!;
       if (seen.has(oid) || oid === ZERO_OID) continue;
-      const obj = this.objects.get(oid);
-      if (!obj || obj.type !== 'commit') continue;
+      const info = this.commitInfo(oid);
+      if (!info) continue;
       seen.add(oid);
-      for (const p of parseCommit(obj.data).parents) stack.push(p);
+      for (const p of info.parents) stack.push(p);
     }
     return seen;
   }
 
-  /** Is `desc` a descendant of (or equal to) `anc`? */
+  /** Is `desc` a descendant of (or equal to) `anc`? Stops at the first hit. */
   isDescendant(desc: string, anc: string): boolean {
     if (desc === anc) return true;
-    return this.commitAncestors(desc).has(anc);
+    const seen = new Set<string>();
+    const stack = [desc];
+    while (stack.length > 0) {
+      const oid = stack.pop()!;
+      if (seen.has(oid) || oid === ZERO_OID) continue;
+      seen.add(oid);
+      if (oid === anc) return true;
+      const info = this.commitInfo(oid);
+      if (!info) continue;
+      for (const p of info.parents) stack.push(p);
+    }
+    return false;
   }
 
   /** First common ancestor of a and b (best merge-base approximation for linear histories). */
@@ -133,9 +158,9 @@ export class Repo {
       if (seen.has(oid) || oid === ZERO_OID) continue;
       seen.add(oid);
       if (ancA.has(oid)) return oid;
-      const obj = this.objects.get(oid);
-      if (!obj || obj.type !== 'commit') continue;
-      for (const p of parseCommit(obj.data).parents) stack.push(p);
+      const info = this.commitInfo(oid);
+      if (!info) continue;
+      for (const p of info.parents) stack.push(p);
     }
     return null;
   }
@@ -154,19 +179,17 @@ export class Repo {
 
   /** Tree oid of a commit. */
   treeOf(commitOid: string): string {
-    const obj = this.objects.get(commitOid);
-    if (!obj || obj.type !== 'commit') return '';
-    return parseCommit(obj.data).tree;
+    const info = this.commitInfo(commitOid);
+    return info ? info.tree : '';
   }
 
   /** All objects reachable from a commit (commit + its tree + blobs), recursively. */
   collectCommitObjects(commitOid: string, out: Set<string>): void {
-    const obj = this.objects.get(commitOid);
-    if (!obj || obj.type !== 'commit') return;
+    const info = this.commitInfo(commitOid);
+    if (!info) return;
     if (out.has(commitOid)) return;
     out.add(commitOid);
-    const treeOid = parseCommit(obj.data).tree;
-    this.collectTreeObjects(treeOid, out);
+    this.collectTreeObjects(info.tree, out);
   }
 
   collectTreeObjects(treeOid: string, out: Set<string>): void {
