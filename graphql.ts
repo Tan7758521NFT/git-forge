@@ -52,7 +52,7 @@ function tokenize(src: string): Token[] {
       i += 3;
       continue;
     }
-    if ('{}():$!@=[]'.includes(ch)) {
+    if ('{}():!@=[]'.includes(ch)) {
       tokens.push({ kind: 'punct', value: ch });
       i += 1;
       continue;

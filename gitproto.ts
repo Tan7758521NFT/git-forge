@@ -360,10 +360,20 @@ export function handleReceivePack(repo: Repo | null, body: Buffer): GitResponse 
   if (!repo) return err(404, 'Repository not found');
   const { lines, rest } = splitAtFlush(body);
   const commands: { old: string; next: string; ref: string }[] = [];
+  // The first command line carries the client's capabilities after a NUL:
+  // `<old> <new> <ref>\0report-status side-band-64k ofs-delta agent=...`.
+  // The NUL and everything after it are NOT part of the ref name.
+  let clientSideband = false;
   for (const line of lines) {
     if (line.kind !== 'data') continue;
     const text = line.data.toString('utf8').trimEnd();
-    const parts = text.split(' ');
+    const nul = text.indexOf('\0');
+    const beforeNul = nul === -1 ? text : text.slice(0, nul);
+    if (nul !== -1) {
+      const caps = text.slice(nul + 1).split(' ');
+      if (caps.includes('side-band-64k')) clientSideband = true;
+    }
+    const parts = beforeNul.split(' ');
     if (parts.length >= 3) commands.push({ old: parts[0], next: parts[1], ref: parts[2] });
   }
   // Unpack first: even a rejected push stores its objects.
@@ -373,11 +383,12 @@ export function handleReceivePack(repo: Repo | null, body: Buffer): GitResponse 
       for (const [oid, obj] of parsed.objects) repo.objects.set(oid, obj);
     } catch {
       // A bad pack still gets a report; the client checks unpack ok separately.
-      // If the pack is unusable, report unpack as failed via ng lines below.
       const report = [pkt('unpack bad pack\n')];
       for (const c of commands) report.push(pkt(`ng ${c.ref} unpack failed\n`));
       report.push(FLUSH);
-      return ok('application/x-git-receive-pack-result', Buffer.concat([sideband(Buffer.concat(report)), FLUSH]));
+      const reportBytes = Buffer.concat(report);
+      const bodyOut = clientSideband ? Buffer.concat([sideband(reportBytes), FLUSH]) : reportBytes;
+      return ok('application/x-git-receive-pack-result', bodyOut);
     }
   }
   const report: Buffer[] = [pkt('unpack ok\n')];
@@ -406,7 +417,11 @@ export function handleReceivePack(repo: Repo | null, body: Buffer): GitResponse 
     report.push(pkt(`ok ${cmd.ref}\n`));
   }
   report.push(FLUSH);
-  return ok('application/x-git-receive-pack-result', Buffer.concat([sideband(Buffer.concat(report)), FLUSH]));
+  const reportBytes = Buffer.concat(report);
+  // With side-band-64k the report-status stream is pkt-lined inside band 1;
+  // without it the body is the report-status pkt-line stream directly.
+  const bodyOut = clientSideband ? Buffer.concat([sideband(reportBytes), FLUSH]) : reportBytes;
+  return ok('application/x-git-receive-pack-result', bodyOut);
 }
 
 // Re-export for tests.
